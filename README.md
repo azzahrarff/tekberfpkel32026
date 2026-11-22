@@ -24,7 +24,7 @@ Dengan demikian, AnggaranTerbuka diharapkan dapat meningkatkan literasi dan akse
 
 | NRP | Nama | GitHub Profile |
 | --- | --- | --- |
-| 5026241011 | Mukhammad Bagas Aditya | - |
+| 5026241011 | Mukhammad Bagas Aditya | https://github.com/adityabagas486-arch |
 | 5026241026 | Yudith Zharifah Utami | https://github.com/YudithZharifahUtami06 |
 | 5026241036 | Anastasia Azzahra Rafif | https://github.com/azzahrarff |
 | 5026241067 | Tavasya Alia Anjani | https://github.com/Tavasya067 |
