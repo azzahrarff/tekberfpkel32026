@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/config/supabase_config.dart';
-import 'screens/navigation/bottom_navbar.dart';
+import 'screens/authentication/splash_screen.dart';
 
 Future<void> main() async {
   // Memastikan Flutter siap sebelum menjalankan aplikasi.
@@ -31,7 +31,7 @@ class MyApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const BottomNavbar(),
+      home: const SplashScreen(),
     );
   }
 }
