@@ -1,20 +1,24 @@
+
 import 'package:flutter/material.dart';
 
 import '../budget/budget_screen.dart';
+import '../budget/budget_service.dart';
 import '../budget/information_source_screen.dart';
 import '../profile/notification_screen.dart';
 import '../profile/profile_screen.dart';
 import '../project/project_detail_screen.dart';
 import '../project/project_screen.dart';
+import '../project/project_model.dart';
+import '../project/project_service.dart';
 import 'region_period_screen.dart';
 
 /// Halaman Beranda (Home).
-/// Desain mengikuti frame "Landign Page" di halaman Figma "Vasya".
-/// Semua angka di halaman ini adalah data simulasi (bukan data resmi).
+/// Desain mengikuti frame "Landing Page" di Figma.
+/// Data kategori dan proyek diambil dari Supabase.
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
-  // Warna utama aplikasi (sama dengan halaman Anggaran)
+  // Warna utama aplikasi
   static const Color navy = Color(0xFF142C4E);
   static const Color blue = Color(0xFF245B9E);
   static const Color teal = Color(0xFF159A91);
@@ -22,77 +26,141 @@ class HomeScreen extends StatelessWidget {
   static const Color grey = Color(0xFF687586);
   static const Color border = Color(0xFFDFE6EE);
 
-  // Data simulasi: alokasi anggaran per kategori
-  static const List<Map<String, dynamic>> categories = [
-    {
-      'name': 'Pendidikan',
-      'amount': 'Rp1,56 T',
-      'value': 0.30,
-      'color': Color(0xFF245B9E),
-    },
-    {
-      'name': 'Infrastruktur',
-      'amount': 'Rp1,30 T',
-      'value': 0.25,
-      'color': Color(0xFF159A91),
-    },
-    {
-      'name': 'Kesehatan',
-      'amount': 'Rp1,04 T',
-      'value': 0.20,
-      'color': Color(0xFF5B89C2),
-    },
-    {
-      'name': 'Transportasi',
-      'amount': 'Rp520 M',
-      'value': 0.10,
-      'color': Color(0xFF7EC7C1),
-    },
-    {
-      'name': 'Perlindungan sosial',
-      'amount': 'Rp520 M',
-      'value': 0.10,
-      'color': Color(0xFF8AA0BB),
-    },
-    {
-      'name': 'Lingkungan',
-      'amount': 'Rp260 M',
-      'value': 0.05,
-      'color': Color(0xFFB7C6D8),
-    },
-  ];
-
-  // Data simulasi: proyek di sekitar wilayah
-  static const List<Map<String, dynamic>> projects = [
-    {
-      'title': 'Pembangunan Jalan Raya Kecamatan Sukolilo',
-      'location': 'Sukolilo · Jalan dan jembatan',
-      'budget': 'Rp2 miliar',
-      'progress': 0.58,
-      'done': false,
-      'hasImage': true,
-    },
-    {
-      'title': 'Renovasi Puskesmas Kecamatan Wonokromo',
-      'location': 'Wonokromo · Kesehatan',
-      'budget': 'Rp1,5 miliar',
-      'progress': 0.70,
-      'done': false,
-      'hasImage': false,
-    },
-    {
-      'title': 'Peningkatan Fasilitas Sekolah Dasar',
-      'location': 'Tambaksari · Pendidikan',
-      'budget': 'Rp850 juta',
-      'progress': 1.0,
-      'done': true,
-      'hasImage': false,
-    },
-  ];
-
   void _open(BuildContext context, Widget page) {
-    Navigator.push(context, MaterialPageRoute(builder: (context) => page));
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => page),
+    );
   }
+
+  // ============================================================
+  // SUPABASE: DATA KATEGORI ANGGARAN
+  // ============================================================
+
+  static final Future<List<Map<String, dynamic>>> _categoriesFuture =
+      _loadCategories();
+
+  static Future<List<Map<String, dynamic>>> _loadCategories() async {
+    final service = BudgetService();
+
+    // Mengambil daftar wilayah dari Supabase
+    final regions = await service.getRegions();
+
+    // Mencari wilayah Kota Surabaya
+    final matchingRegions = regions.where(
+      (region) => region['region_name'] == 'Kota Surabaya',
+    );
+
+    if (matchingRegions.isEmpty) {
+      throw Exception('Wilayah Kota Surabaya tidak ditemukan.');
+    }
+
+    final regionId = BudgetService.number(
+      matchingRegions.first['id'],
+    ).toInt();
+
+    // Mengambil daftar kategori dari tabel budget_categories
+    final categories = await service.getCategories();
+
+    // Mengambil data anggaran tahun 2026
+    final budgets = await service.getBudgets(
+      year: 2026,
+      regionId: regionId,
+      governmentLevel: 'Kota',
+    );
+
+    // Menghitung total alokasi berdasarkan category_id
+    final Map<int, double> allocations = {};
+
+    for (final budget in budgets) {
+      final categoryId = BudgetService.number(
+        budget['category_id'],
+      ).toInt();
+
+      final allocation = BudgetService.number(
+        budget['total_allocation'],
+      );
+
+      allocations[categoryId] =
+          (allocations[categoryId] ?? 0) + allocation;
+    }
+
+    // Menghitung total seluruh anggaran
+    final totalAllocation = allocations.values.fold<double>(
+      0,
+      (total, value) => total + value,
+    );
+
+    // Warna kategori
+    const palette = [
+      Color(0xFF245B9E),
+      Color(0xFF159A91),
+      Color(0xFFE6A23C),
+      Color(0xFF8B70B5),
+      Color(0xFF78A5A8),
+      Color(0xFF8292A5),
+    ];
+
+    // Menggabungkan kategori dengan alokasi anggarannya
+    final result = categories.map((category) {
+      final categoryId = BudgetService.number(
+        category['id'],
+      ).toInt();
+
+      final allocation = allocations[categoryId] ?? 0.0;
+
+      final percentage = totalAllocation > 0
+          ? allocation / totalAllocation
+          : 0.0;
+
+      final index = categories.indexOf(category);
+
+      return {
+        'name': category['category_name']?.toString() ?? 'Lainnya',
+        'amount': _formatBudgetAmount(allocation),
+        'value': percentage,
+        'color': palette[index % palette.length],
+      };
+    }).toList();
+
+    // Mengurutkan kategori berdasarkan alokasi terbesar
+    result.sort(
+      (a, b) => (b['value'] as double)
+          .compareTo(a['value'] as double),
+    );
+
+    return result;
+  }
+
+  // Format nominal Rupiah
+  static String _formatBudgetAmount(double value) {
+    if (value >= 1000000000000) {
+      return 'Rp${(value / 1000000000000).toStringAsFixed(2)} T';
+    }
+
+    if (value >= 1000000000) {
+      return 'Rp${(value / 1000000000).toStringAsFixed(2)} M';
+    }
+
+    if (value >= 1000000) {
+      return 'Rp${(value / 1000000).toStringAsFixed(2)} jt';
+    }
+
+    return 'Rp${value.toStringAsFixed(0)}';
+  }
+
+  // ============================================================
+  // SUPABASE: DATA PROYEK
+  // ============================================================
+
+  static final Future<List<Project>> _projectsFuture =
+      ProjectService()
+          .getProjects(const ProjectFilter())
+          .then((list) => list.take(3).toList());
+
+  // ============================================================
+  // BUILD
+  // ============================================================
 
   @override
   Widget build(BuildContext context) {
@@ -135,7 +203,10 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // HEADER: logo, nama aplikasi, notifikasi, profil
+  // ============================================================
+  // HEADER
+  // ============================================================
+
   Widget _buildHeader(BuildContext context) {
     return Container(
       height: 60,
@@ -146,7 +217,6 @@ class HomeScreen extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Logo: tiga batang grafik di kotak navy
           Container(
             width: 32,
             height: 32,
@@ -187,7 +257,10 @@ class HomeScreen extends StatelessWidget {
           ),
           const Spacer(),
           GestureDetector(
-            onTap: () => _open(context, const NotificationScreen()),
+            onTap: () => _open(
+              context,
+              const NotificationScreen(),
+            ),
             child: Stack(
               children: [
                 const SizedBox(
@@ -208,7 +281,10 @@ class HomeScreen extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: const Color(0xFFC94C4C),
                       shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 1.6),
+                      border: Border.all(
+                        color: Colors.white,
+                        width: 1.6,
+                      ),
                     ),
                   ),
                 ),
@@ -217,7 +293,10 @@ class HomeScreen extends StatelessWidget {
           ),
           const SizedBox(width: 16),
           GestureDetector(
-            onTap: () => _open(context, const ProfileScreen()),
+            onTap: () => _open(
+              context,
+              const ProfileScreen(),
+            ),
             child: const CircleAvatar(
               radius: 17,
               backgroundColor: Color(0xFFD9E8F5),
@@ -242,12 +321,17 @@ class HomeScreen extends StatelessWidget {
       height: height,
       decoration: BoxDecoration(
         color: color,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(2)),
+        borderRadius: const BorderRadius.vertical(
+          top: Radius.circular(2),
+        ),
       ),
     );
   }
 
-  // SAMBUTAN + PILIHAN WILAYAH & TAHUN
+  // ============================================================
+  // WELCOME
+  // ============================================================
+
   Widget _buildWelcome(BuildContext context) {
     return Container(
       width: double.infinity,
@@ -256,18 +340,29 @@ class HomeScreen extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFFEAF2FA), Color(0xFFF6F9FC), Color(0xFFE8F6F4)],
+          colors: [
+            Color(0xFFEAF2FA),
+            Color(0xFFF6F9FC),
+            Color(0xFFE8F6F4),
+          ],
         ),
-        border: Border(bottom: BorderSide(color: Color(0xFFDAE6EF))),
+        border: Border(
+          bottom: BorderSide(color: Color(0xFFDAE6EF)),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 7,
+            ),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.7),
-              border: Border.all(color: const Color(0xFFD1E2F1)),
+              border: Border.all(
+                color: const Color(0xFFD1E2F1),
+              ),
               borderRadius: BorderRadius.circular(100),
             ),
             child: const Text(
@@ -283,19 +378,27 @@ class HomeScreen extends StatelessWidget {
           const SizedBox(height: 18),
           const Text(
             'Selamat datang, Ayu.',
-            style: TextStyle(fontSize: 27, letterSpacing: -1.2, color: navy),
+            style: TextStyle(
+              fontSize: 27,
+              letterSpacing: -1.2,
+              color: navy,
+            ),
           ),
           const SizedBox(height: 5),
           const Text(
             'Pantau bagaimana anggaran publik bekerja untuk kotamu.',
-            style: TextStyle(fontSize: 13, color: Color(0xFF53657A)),
+            style: TextStyle(
+              fontSize: 13,
+              color: Color(0xFF53657A),
+            ),
           ),
           const SizedBox(height: 28),
-          // Kartu pilihan wilayah dan tahun anggaran
           Container(
             decoration: BoxDecoration(
               color: Colors.white,
-              border: Border.all(color: const Color(0xFFD9E4EE)),
+              border: Border.all(
+                color: const Color(0xFFD9E4EE),
+              ),
               borderRadius: BorderRadius.circular(14),
               boxShadow: const [
                 BoxShadow(
@@ -313,7 +416,11 @@ class HomeScreen extends StatelessWidget {
                   value: 'Kota Surabaya, Jawa Timur',
                   showIcon: true,
                 ),
-                const Divider(height: 1, thickness: 0.8, color: border),
+                const Divider(
+                  height: 1,
+                  thickness: 0.8,
+                  color: border,
+                ),
                 _selectorRow(
                   context,
                   label: 'Tahun anggaran',
@@ -335,9 +442,15 @@ class HomeScreen extends StatelessWidget {
     required bool showIcon,
   }) {
     return InkWell(
-      onTap: () => _open(context, const RegionPeriodScreen()),
+      onTap: () => _open(
+        context,
+        const RegionPeriodScreen(),
+      ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 18,
+          vertical: 11,
+        ),
         child: Row(
           children: [
             if (showIcon) ...[
@@ -362,7 +475,10 @@ class HomeScreen extends StatelessWidget {
                 children: [
                   Text(
                     label,
-                    style: const TextStyle(fontSize: 11, color: grey),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: grey,
+                    ),
                   ),
                   const SizedBox(height: 5),
                   Text(
@@ -387,19 +503,31 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // LABEL DATA SIMULASI
+  // ============================================================
+  // SIMULATION LABEL
+  // ============================================================
+
   Widget _buildSimulationLabel() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 9,
+        vertical: 6,
+      ),
       decoration: BoxDecoration(
         color: const Color(0xFFFFF9E9),
-        border: Border.all(color: const Color(0xFFEDD8A7)),
+        border: Border.all(
+          color: const Color(0xFFEDD8A7),
+        ),
         borderRadius: BorderRadius.circular(6),
       ),
       child: const Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.info_outline, size: 14, color: Color(0xFF755022)),
+          Icon(
+            Icons.info_outline,
+            size: 14,
+            color: Color(0xFF755022),
+          ),
           SizedBox(width: 6),
           Text(
             'DATA SIMULASI — BUKAN DATA RESMI',
@@ -415,7 +543,10 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // KARTU RINGKASAN ANGGARAN WILAYAH
+  // ============================================================
+  // SUMMARY CARD
+  // ============================================================
+
   Widget _buildSummaryCard(BuildContext context) {
     return Container(
       clipBehavior: Clip.antiAlias,
@@ -434,7 +565,10 @@ class HomeScreen extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 20,
+              vertical: 24,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -474,7 +608,9 @@ class HomeScreen extends StatelessWidget {
                           SizedBox(height: 2),
                           Text.rich(
                             TextSpan(
-                              style: TextStyle(color: Colors.white),
+                              style: TextStyle(
+                                color: Colors.white,
+                              ),
                               children: [
                                 TextSpan(
                                   text: 'Rp5,20 ',
@@ -535,21 +671,25 @@ class HomeScreen extends StatelessWidget {
                     SizedBox(width: 7),
                     Text(
                       'Periode pelaporan sampai 31 Oktober 2026',
-                      style: TextStyle(fontSize: 10, color: Color(0xFFAEBDCB)),
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFFAEBDCB),
+                      ),
                     ),
                   ],
                 ),
               ],
             ),
           ),
-          // Bagian bawah kartu: dasar informasi
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.07),
               border: Border(
-                top: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
+                top: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.12),
+                ),
               ),
             ),
             child: Row(
@@ -590,8 +730,10 @@ class HomeScreen extends StatelessWidget {
                         ),
                       ),
                       GestureDetector(
-                        onTap: () =>
-                            _open(context, const InformationSourceScreen()),
+                        onTap: () => _open(
+                          context,
+                          const InformationSourceScreen(),
+                        ),
                         child: const Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -623,7 +765,6 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // Lingkaran persentase realisasi (65,4% terealisasi)
   Widget _buildRealizationRing(double value) {
     return SizedBox(
       width: 74,
@@ -654,7 +795,10 @@ class HomeScreen extends StatelessWidget {
               ),
               Text(
                 'terealisasi',
-                style: TextStyle(fontSize: 8, color: Color(0xFFB9C7D5)),
+                style: TextStyle(
+                  fontSize: 8,
+                  color: Color(0xFFB9C7D5),
+                ),
               ),
             ],
           ),
@@ -663,13 +807,20 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _legendItem(Color color, String label, String value) {
+  Widget _legendItem(
+    Color color,
+    String label,
+    String value,
+  ) {
     return Row(
       children: [
         Container(
           width: 9,
           height: 9,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
         ),
         const SizedBox(width: 9),
         Column(
@@ -677,7 +828,10 @@ class HomeScreen extends StatelessWidget {
           children: [
             Text(
               label,
-              style: const TextStyle(fontSize: 10, color: Color(0xFFAEBDCB)),
+              style: const TextStyle(
+                fontSize: 10,
+                color: Color(0xFFAEBDCB),
+              ),
             ),
             Text(
               value,
@@ -693,7 +847,10 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // Bar progres yang dipakai berulang kali
+  // ============================================================
+  // PROGRESS BAR
+  // ============================================================
+
   Widget _progressBar(
     double value,
     Color color,
@@ -703,7 +860,7 @@ class HomeScreen extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(100),
       child: LinearProgressIndicator(
-        value: value,
+        value: value.clamp(0.0, 1.0),
         minHeight: height,
         color: color,
         backgroundColor: trackColor,
@@ -711,7 +868,10 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // Judul tiap bagian + tombol di kanan
+  // ============================================================
+  // SECTION TITLE
+  // ============================================================
+
   Widget _sectionTitle(
     String title,
     String actionText,
@@ -746,19 +906,32 @@ class HomeScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 5),
-                  const Icon(Icons.chevron_right, size: 16, color: blue),
+                  const Icon(
+                    Icons.chevron_right,
+                    size: 16,
+                    color: blue,
+                  ),
                 ],
               ),
             ),
           ],
         ),
         const SizedBox(height: 7),
-        Text(subtitle, style: const TextStyle(fontSize: 12, color: grey)),
+        Text(
+          subtitle,
+          style: const TextStyle(
+            fontSize: 12,
+            color: grey,
+          ),
+        ),
       ],
     );
   }
 
-  // KE MANA ANGGARAN DIALOKASIKAN?
+  // ============================================================
+  // BUDGET CATEGORIES - SUPABASE
+  // ============================================================
+
   Widget _buildCategories(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -766,7 +939,6 @@ class HomeScreen extends StatelessWidget {
         _sectionTitle(
           'Ke mana anggaran dialokasikan?',
           'Jelajahi anggaran',
-          // Membuka halaman Anggaran buatan tim
           () => _open(context, const BudgetScreen()),
           'Distribusi anggaran per kategori pada tahun 2026',
         ),
@@ -785,10 +957,70 @@ class HomeScreen extends StatelessWidget {
               ),
             ],
           ),
-          child: Column(
-            children: [
-              for (final category in categories) _categoryItem(category),
-            ],
+          child: FutureBuilder<List<Map<String, dynamic>>>(
+            future: _categoriesFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Padding(
+                  padding: EdgeInsets.all(30),
+                  child: Center(
+                    child: CircularProgressIndicator(color: teal),
+                  ),
+                );
+              }
+
+              if (snapshot.hasError) {
+                return Padding(
+                  padding: const EdgeInsets.all(15),
+                  child: Column(
+                    children: [
+                      const Icon(
+                        Icons.error_outline,
+                        color: Color(0xFFC94C4C),
+                        size: 30,
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Gagal memuat kategori anggaran.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: grey,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        '${snapshot.error}',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: grey,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              final items = snapshot.data ?? [];
+
+              if (items.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.all(15),
+                  child: Text(
+                    'Belum ada kategori anggaran.',
+                    style: TextStyle(color: grey),
+                  ),
+                );
+              }
+
+              return Column(
+                children: [
+                  for (final category in items)
+                    _categoryItem(category),
+                ],
+              );
+            },
           ),
         ),
       ],
@@ -796,7 +1028,8 @@ class HomeScreen extends StatelessWidget {
   }
 
   Widget _categoryItem(Map<String, dynamic> category) {
-    final double value = category['value'];
+    final double value = category['value'] as double;
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Column(
@@ -828,7 +1061,7 @@ class HomeScreen extends StatelessWidget {
               Expanded(
                 child: _progressBar(
                   value,
-                  category['color'],
+                  category['color'] as Color,
                   const Color(0xFFEDF0F4),
                   7,
                 ),
@@ -852,7 +1085,10 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // PROYEK DI SEKITAR WILAYAHMU
+  // ============================================================
+  // PROJECTS
+  // ============================================================
+
   Widget _buildProjects(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -864,26 +1100,60 @@ class HomeScreen extends StatelessWidget {
           'Cuplikan proyek publik di Kota Surabaya',
         ),
         const SizedBox(height: 22),
-        for (int i = 0; i < projects.length; i++) ...[
-          if (i > 0) const SizedBox(height: 18),
-          _projectCard(context, projects[i]),
-        ],
+        FutureBuilder<List<Project>>(
+          future: _projectsFuture,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Padding(
+                padding: EdgeInsets.all(30),
+                child: Center(
+                  child: CircularProgressIndicator(color: teal),
+                ),
+              );
+            }
+
+            if (snapshot.hasError) {
+              return const Text(
+                'Gagal memuat proyek.',
+                style: TextStyle(color: grey),
+              );
+            }
+
+            final items = snapshot.data ?? [];
+
+            if (items.isEmpty) {
+              return const Text(
+                'Belum ada proyek.',
+                style: TextStyle(color: grey),
+              );
+            }
+
+            return Column(
+              children: [
+                for (int i = 0; i < items.length; i++) ...[
+                  if (i > 0) const SizedBox(height: 18),
+                  _projectCard(context, items[i]),
+                ],
+              ],
+            );
+          },
+        ),
       ],
     );
   }
 
-  Widget _projectCard(BuildContext context, Map<String, dynamic> project) {
-    final double progress = project['progress'];
-    final bool done = project['done'];
-    final Color statusColor = done
-        ? const Color(0xFF21865A)
-        : const Color(0xFF106F69);
-    final Color statusBg = done
-        ? const Color(0xFFE7F5ED)
-        : const Color(0xFFE7F5F3);
+  Widget _projectCard(BuildContext context, Project p) {
+    final Color statusColor = ProjectStatus.color(p.status);
+
+    final double? progress = p.progress == null
+        ? null
+        : (p.progress! / 100).clamp(0.0, 1.0);
 
     return GestureDetector(
-      onTap: () => _open(context, const ProjectDetailScreen()),
+      onTap: () => _open(
+        context,
+        ProjectDetailScreen(projectId: p.id),
+      ),
       child: Container(
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
@@ -894,19 +1164,14 @@ class HomeScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Di Figma kartu pertama memakai foto pekerja konstruksi.
-            // Sementara diganti kotak berwarna + ikon sampai fotonya
-            // diekspor dari Figma ke folder assets/images/.
-            if (project['hasImage'])
-              Container(
+            if (p.imageUrl != null && p.imageUrl!.isNotEmpty)
+              Image.network(
+                p.imageUrl!,
                 height: 165,
                 width: double.infinity,
-                color: const Color(0xFFEAF2FA),
-                child: const Icon(
-                  Icons.construction,
-                  size: 56,
-                  color: Color(0xFF8AA0BB),
-                ),
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) =>
+                    const SizedBox.shrink(),
               ),
             Padding(
               padding: const EdgeInsets.all(18),
@@ -921,7 +1186,7 @@ class HomeScreen extends StatelessWidget {
                           vertical: 5,
                         ),
                         decoration: BoxDecoration(
-                          color: statusBg,
+                          color: statusColor.withValues(alpha: 0.12),
                           borderRadius: BorderRadius.circular(100),
                         ),
                         child: Row(
@@ -937,7 +1202,7 @@ class HomeScreen extends StatelessWidget {
                             ),
                             const SizedBox(width: 6),
                             Text(
-                              done ? 'Selesai' : 'Dalam pengerjaan',
+                              p.status,
                               style: TextStyle(
                                 fontSize: 9,
                                 fontWeight: FontWeight.bold,
@@ -948,13 +1213,16 @@ class HomeScreen extends StatelessWidget {
                         ),
                       ),
                       const Spacer(),
-                      // Tombol simpan proyek (belum ada fungsinya)
-                      const Icon(Icons.favorite_border, size: 24, color: blue),
+                      const Icon(
+                        Icons.favorite_border,
+                        size: 24,
+                        color: blue,
+                      ),
                     ],
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    project['title'],
+                    p.name,
                     style: const TextStyle(
                       fontSize: 15,
                       height: 1.45,
@@ -970,25 +1238,48 @@ class HomeScreen extends StatelessWidget {
                         color: grey,
                       ),
                       const SizedBox(width: 4),
-                      Text(
-                        project['location'],
-                        style: const TextStyle(fontSize: 10, color: grey),
+                      Expanded(
+                        child: Text(
+                          [
+                            if (p.district != null) p.district!,
+                            if (p.categoryName != null) p.categoryName!,
+                          ].join(' · '),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: grey,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 16),
                   Row(
                     children: [
-                      _smallStat('Pagu anggaran', project['budget']),
+                      _smallStat(
+                        'Pagu anggaran',
+                        p.budget == null
+                            ? 'Belum tersedia'
+                            : formatRupiah(p.budget!),
+                      ),
                       const SizedBox(width: 52),
                       _smallStat(
                         'Progres fisik',
-                        '${(progress * 100).round()}%',
+                        p.progress == null
+                            ? 'Belum tersedia'
+                            : '${p.progress!.round()}%',
                       ),
                     ],
                   ),
-                  const SizedBox(height: 11),
-                  _progressBar(progress, teal, const Color(0xFFE6EBF0), 8),
+                  if (progress != null) ...[
+                    const SizedBox(height: 11),
+                    _progressBar(
+                      progress,
+                      teal,
+                      const Color(0xFFE6EBF0),
+                      8,
+                    ),
+                  ],
                   const SizedBox(height: 15),
                   const Divider(
                     height: 1,
@@ -996,14 +1287,19 @@ class HomeScreen extends StatelessWidget {
                     color: Color(0xFFEDF0F3),
                   ),
                   const SizedBox(height: 13),
-                  const Row(
+                  Row(
                     children: [
                       Text(
-                        'Diperbarui 31 Oktober 2026',
-                        style: TextStyle(fontSize: 9, color: Color(0xFF7A8797)),
+                        p.updatedAt == null
+                            ? 'Belum ada pembaruan'
+                            : 'Diperbarui ${formatDate(p.updatedAt!)}',
+                        style: const TextStyle(
+                          fontSize: 9,
+                          color: Color(0xFF7A8797),
+                        ),
                       ),
-                      Spacer(),
-                      Icon(
+                      const Spacer(),
+                      const Icon(
                         Icons.chevron_right,
                         size: 16,
                         color: Color(0xFF7A8797),
@@ -1023,7 +1319,13 @@ class HomeScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(fontSize: 9, color: grey)),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 9,
+            color: grey,
+          ),
+        ),
         Text(
           value,
           style: const TextStyle(
@@ -1036,17 +1338,28 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // INSIGHT ANGGARAN
+  // ============================================================
+  // INSIGHT
+  // ============================================================
+
   Widget _buildInsight(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 18,
+        vertical: 22,
+      ),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFFEAF2FA), Color(0xFFEDF8F6)],
+          colors: [
+            Color(0xFFEAF2FA),
+            Color(0xFFEDF8F6),
+          ],
         ),
-        border: Border.all(color: const Color(0xFFD6E5ED)),
+        border: Border.all(
+          color: const Color(0xFFD6E5ED),
+        ),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
@@ -1066,7 +1379,11 @@ class HomeScreen extends StatelessWidget {
                 ),
               ],
             ),
-            child: const Icon(Icons.trending_up_rounded, size: 26, color: teal),
+            child: const Icon(
+              Icons.trending_up_rounded,
+              size: 26,
+              color: teal,
+            ),
           ),
           const SizedBox(width: 20),
           Expanded(
@@ -1085,18 +1402,27 @@ class HomeScreen extends StatelessWidget {
                 const SizedBox(height: 7),
                 const Text(
                   'Alokasi pendidikan naik 11,4% dibanding 2025',
-                  style: TextStyle(fontSize: 15, color: navy),
+                  style: TextStyle(
+                    fontSize: 15,
+                    color: navy,
+                  ),
                 ),
                 const SizedBox(height: 7),
                 const Text(
                   'Dari Rp1,40 triliun menjadi Rp1,56 triliun pada cakupan tahunan yang sebanding.',
-                  style: TextStyle(fontSize: 11, height: 1.5, color: grey),
+                  style: TextStyle(
+                    fontSize: 11,
+                    height: 1.5,
+                    color: grey,
+                  ),
                 ),
                 const SizedBox(height: 15),
                 Center(
                   child: GestureDetector(
-                    // Grafik perbandingan ada di bawah halaman Anggaran
-                    onTap: () => _open(context, const BudgetScreen()),
+                    onTap: () => _open(
+                      context,
+                      const BudgetScreen(),
+                    ),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1109,7 +1435,11 @@ class HomeScreen extends StatelessWidget {
                           ),
                         ),
                         SizedBox(width: 4),
-                        Icon(Icons.chevron_right, size: 16, color: blue),
+                        Icon(
+                          Icons.chevron_right,
+                          size: 16,
+                          color: blue,
+                        ),
                       ],
                     ),
                   ),
