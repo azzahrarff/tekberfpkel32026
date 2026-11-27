@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
-import '../review_project/project_review_screen.dart';
 
-// Kompatibel dengan pemanggilan lama tanpa parameter dari HomeScreen.
-// Jika ID nyata tersedia, kirim projectId agar langsung membuka rincian.
 class ProjectDetailScreen extends StatelessWidget {
-  final int? projectId;
-  const ProjectDetailScreen({super.key, this.projectId});
+  final int projectId;
+
+  const ProjectDetailScreen({super.key, required this.projectId});
 
   @override
-  Widget build(BuildContext context) => ProjectReviewScreen(projectId: projectId);
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Detail Proyek')),
+      body: Center(child: Text('Proyek #$projectId')),
+    );
+  }
 }
