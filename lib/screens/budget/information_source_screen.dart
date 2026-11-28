@@ -4,11 +4,13 @@ import 'budget_service.dart';
 import 'education_screen.dart';
 
 class InformationSourceScreen extends StatefulWidget {
-  final int? year;
+  final Map<String, dynamic>? project;
+  final bool fromEducation;
 
   const InformationSourceScreen({
     super.key,
-    this.year,
+    this.project,
+    this.fromEducation = false,
   });
 
   @override
@@ -46,28 +48,18 @@ class _InformationSourceScreenState
     });
 
     try {
-      final datasetResponse = await service.getDatasets();
+      final project = widget.project;
+      final filteredDatasets = project == null
+          ? await service.getDatasets()
+          : await service.getProjectDatasets(project);
       final glossaryResponse = await service.getGlossary();
-
-      final filteredDatasets = widget.year == null
-          ? datasetResponse
-          : datasetResponse.where((item) {
-              final year = widget.year.toString();
-
-              return item['fiscal_year']?.toString() == year ||
-                  (item['dataset_name']?.toString() ?? '')
-                      .contains(year) ||
-                  (item['data_scope']?.toString() ?? '')
-                      .contains(year) ||
-                  (item['reporting_period']?.toString() ?? '')
-                      .contains(year);
-            }).toList();
 
       final indicatorTerms = [
         'pagu anggaran',
         'realisasi keuangan',
         'nilai kontrak',
         'progres fisik',
+        'realisasi fisik',
       ];
 
       final filteredDefinitions =
@@ -86,9 +78,7 @@ class _InformationSourceScreenState
       setState(() {
         datasets = filteredDatasets;
 
-        definitions = filteredDefinitions.isNotEmpty
-            ? filteredDefinitions
-            : glossaryResponse;
+        definitions = filteredDefinitions;
 
         loading = false;
       });
@@ -148,13 +138,18 @@ class _InformationSourceScreenState
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: background,
-      body: SafeArea(
+      body: RefreshIndicator(
+        onRefresh: () async {
+          if (!loading) await loadInformation();
+        },
+        child: SafeArea(
         child: Column(
           children: [
             _buildHeader(),
 
             Expanded(
               child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(
                   20, 20, 20, 30,
                 ),
@@ -194,8 +189,10 @@ class _InformationSourceScreenState
 
                     const SizedBox(height: 12),
 
-                    const Text(
-                      'Telusuri konteks, definisi, dan keterbatasan data yang ditampilkan.',
+                    Text(
+                      widget.project == null
+                          ? 'Telusuri konteks, definisi, dan keterbatasan data yang ditampilkan.'
+                          : 'Dataset anggaran terkait berdasarkan wilayah, kategori, dan tahun proyek.',
                       style: TextStyle(
                         color: grey,
                         fontSize: 15,
@@ -212,7 +209,9 @@ class _InformationSourceScreenState
                     else ...[
                       if (datasets.isEmpty)
                         _buildEmptyData(
-                          'Metadata dataset belum tersedia.',
+                          widget.project == null
+                              ? 'Metadata dataset belum tersedia.'
+                              : 'Belum ada metadata anggaran untuk wilayah, kategori, dan tahun proyek ini.',
                         )
                       else
                         ...datasets.map(
@@ -236,6 +235,7 @@ class _InformationSourceScreenState
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -670,11 +670,15 @@ class _InformationSourceScreenState
 
           InkWell(
             onTap: () {
+              if (widget.fromEducation) {
+                Navigator.pop(context);
+                return;
+              }
               Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder: (_) =>
-                      const EducationScreen(),
+                      EducationScreen(project: widget.project, fromMetadata: true),
                 ),
               );
             },
