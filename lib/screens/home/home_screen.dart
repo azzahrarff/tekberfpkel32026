@@ -1,23 +1,28 @@
-
 import 'package:flutter/material.dart';
 
 import '../budget/budget_screen.dart';
-import '../budget/budget_service.dart';
 import '../budget/information_source_screen.dart';
 import '../profile/notification_screen.dart';
 import '../profile/profile_screen.dart';
 import '../project/project_detail_screen.dart';
 import '../project/project_screen.dart';
 import '../project/project_model.dart';
-import '../project/project_service.dart';
+import 'home_service.dart';
 import 'region_period_screen.dart';
 
 /// Halaman Beranda (Home).
 /// Desain mengikuti frame "Landing Page" di Figma.
-/// Data kategori dan proyek diambil dari Supabase.
-class HomeScreen extends StatelessWidget {
+/// Semua data (ringkasan anggaran, kategori, proyek, insight, nama pengguna)
+/// diambil dari Supabase melalui HomeService, sesuai wilayah dan tahun
+/// anggaran yang dipilih di halaman Pilih Wilayah & Periode.
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
   // Warna utama aplikasi
   static const Color navy = Color(0xFF142C4E);
   static const Color blue = Color(0xFF245B9E);
@@ -26,110 +31,182 @@ class HomeScreen extends StatelessWidget {
   static const Color grey = Color(0xFF687586);
   static const Color border = Color(0xFFDFE6EE);
 
+  // Warna kategori
+  static const List<Color> _palette = [
+    Color(0xFF245B9E),
+    Color(0xFF159A91),
+    Color(0xFFE6A23C),
+    Color(0xFF8B70B5),
+    Color(0xFF78A5A8),
+    Color(0xFF8292A5),
+  ];
+
+  final HomeService _service = HomeService();
+
+  // Pilihan wilayah & tahun yang sedang aktif (null = belum dimuat)
+  RegionPeriod? _selection;
+  String? _selectionError;
+
+  // Data dari Supabase
+  Future<BudgetOverview>? _overviewFuture;
+  Future<List<Project>>? _projectsFuture;
+  HomeUser _user = const HomeUser(fullName: null, hasUnreadNotification: false);
+  Set<int> _savedProjectIds = {};
+  final Set<int> _savingProjectIds = {}; // mencegah tap berulang
+
+  @override
+  void initState() {
+    super.initState();
+    // Beranda ikut memuat ulang kalau pilihan diubah dari halaman lain.
+    selectedRegionPeriod.addListener(_onSelectionChanged);
+    _init();
+  }
+
+  @override
+  void dispose() {
+    selectedRegionPeriod.removeListener(_onSelectionChanged);
+    super.dispose();
+  }
+
   void _open(BuildContext context, Widget page) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => page),
-    );
+    Navigator.push(context, MaterialPageRoute(builder: (context) => page));
   }
 
   // ============================================================
-  // SUPABASE: DATA KATEGORI ANGGARAN
+  // SUPABASE: MEMUAT DATA
   // ============================================================
 
-  static final Future<List<Map<String, dynamic>>> _categoriesFuture =
-      _loadCategories();
+  /// Menentukan wilayah & tahun awal, lalu memuat semua data.
+  Future<void> _init() async {
+    _loadUser();
 
-  static Future<List<Map<String, dynamic>>> _loadCategories() async {
-    final service = BudgetService();
-
-    // Mengambil daftar wilayah dari Supabase
-    final regions = await service.getRegions();
-
-    // Mencari wilayah Kota Surabaya
-    final matchingRegions = regions.where(
-      (region) => region['region_name'] == 'Kota Surabaya',
-    );
-
-    if (matchingRegions.isEmpty) {
-      throw Exception('Wilayah Kota Surabaya tidak ditemukan.');
+    // Pakai pilihan sebelumnya kalau ada (misalnya setelah pindah tab).
+    if (selectedRegionPeriod.value != null) {
+      _applySelection(selectedRegionPeriod.value!);
+      return;
     }
 
-    final regionId = BudgetService.number(
-      matchingRegions.first['id'],
-    ).toInt();
+    setState(() => _selectionError = null);
+    try {
+      final selection = await _service.getDefaultRegionPeriod();
+      if (!mounted) return;
+      // Memicu _onSelectionChanged -> data dimuat.
+      selectedRegionPeriod.value = selection;
+    } catch (error) {
+      debugPrint('HomeScreen error: $error');
+      if (!mounted) return;
+      setState(() {
+        _selectionError = 'Gagal memuat data Beranda. Periksa koneksi internet lalu coba lagi.';
+      });
+    }
+  }
 
-    // Mengambil daftar kategori dari tabel budget_categories
-    final categories = await service.getCategories();
+  void _onSelectionChanged() {
+    final selection = selectedRegionPeriod.value;
+    if (selection != null && mounted) _applySelection(selection);
+  }
 
-    // Mengambil data anggaran tahun 2026
-    final budgets = await service.getBudgets(
-      year: 2026,
-      regionId: regionId,
-      governmentLevel: 'Kota',
+  /// Memuat ulang ringkasan anggaran dan proyek untuk pilihan baru.
+  void _applySelection(RegionPeriod selection) {
+    setState(() {
+      _selection = selection;
+      _selectionError = null;
+      _overviewFuture = _service.getBudgetOverview(selection);
+      _projectsFuture = _service.getNearbyProjects(selection);
+    });
+  }
+
+  /// Nama pengguna, notifikasi, dan daftar proyek tersimpan.
+  /// Kalau gagal, Beranda tetap tampil dengan sapaan umum.
+  Future<void> _loadUser() async {
+    try {
+      final user = await _service.getCurrentUser();
+      final savedIds = await _service.getSavedProjectIds();
+      if (!mounted) return;
+      setState(() {
+        _user = user;
+        _savedProjectIds = savedIds;
+      });
+    } catch (error) {
+      debugPrint('HomeScreen user error: $error');
+    }
+  }
+
+  /// Tarik ke bawah untuk memuat ulang.
+  Future<void> _refresh() async {
+    final selection = _selection;
+    if (selection == null) {
+      await _init();
+      return;
+    }
+    _applySelection(selection);
+    await Future.wait<Object?>([
+      _loadUser(),
+      _overviewFuture!.catchError((_) => _emptyOverview),
+      _projectsFuture!.catchError((_) => <Project>[]),
+    ]);
+  }
+
+  static const BudgetOverview _emptyOverview = BudgetOverview(
+    totalAllocation: 0,
+    realized: 0,
+    categories: [],
+    reportingPeriod: null,
+    lastUpdated: null,
+    dataStatus: null,
+    insight: null,
+  );
+
+  /// Membuka halaman Pilih Wilayah & Periode.
+  /// Hasil pilihan diterapkan lewat selectedRegionPeriod.
+  void _openRegionPeriod(BuildContext context) {
+    _open(
+      context,
+      RegionPeriodScreen(
+        initialSelection: _selection,
+        userInitials: _user.initials,
+        hasUnreadNotification: _user.hasUnreadNotification,
+      ),
     );
+  }
 
-    // Menghitung total alokasi berdasarkan category_id
-    final Map<int, double> allocations = {};
+  /// Menyimpan / batal menyimpan proyek (ikon hati di kartu proyek).
+  Future<void> _toggleSaved(Project project) async {
+    if (_savingProjectIds.contains(project.id)) return;
 
-    for (final budget in budgets) {
-      final categoryId = BudgetService.number(
-        budget['category_id'],
-      ).toInt();
+    final bool willSave = !_savedProjectIds.contains(project.id);
+    setState(() => _savingProjectIds.add(project.id));
 
-      final allocation = BudgetService.number(
-        budget['total_allocation'],
+    try {
+      await _service.setProjectSaved(project.id, willSave);
+      if (!mounted) return;
+      setState(() {
+        willSave
+            ? _savedProjectIds.add(project.id)
+            : _savedProjectIds.remove(project.id);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            willSave
+                ? 'Proyek disimpan ke Proyek Tersimpan.'
+                : 'Proyek dihapus dari Proyek Tersimpan.',
+          ),
+        ),
       );
-
-      allocations[categoryId] =
-          (allocations[categoryId] ?? 0) + allocation;
+    } catch (error) {
+      debugPrint('HomeScreen save error: $error');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Gagal menyimpan proyek. Pastikan sudah masuk dan koneksi internet stabil.',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _savingProjectIds.remove(project.id));
     }
-
-    // Menghitung total seluruh anggaran
-    final totalAllocation = allocations.values.fold<double>(
-      0,
-      (total, value) => total + value,
-    );
-
-    // Warna kategori
-    const palette = [
-      Color(0xFF245B9E),
-      Color(0xFF159A91),
-      Color(0xFFE6A23C),
-      Color(0xFF8B70B5),
-      Color(0xFF78A5A8),
-      Color(0xFF8292A5),
-    ];
-
-    // Menggabungkan kategori dengan alokasi anggarannya
-    final result = categories.map((category) {
-      final categoryId = BudgetService.number(
-        category['id'],
-      ).toInt();
-
-      final allocation = allocations[categoryId] ?? 0.0;
-
-      final percentage = totalAllocation > 0
-          ? allocation / totalAllocation
-          : 0.0;
-
-      final index = categories.indexOf(category);
-
-      return {
-        'name': category['category_name']?.toString() ?? 'Lainnya',
-        'amount': _formatBudgetAmount(allocation),
-        'value': percentage,
-        'color': palette[index % palette.length],
-      };
-    }).toList();
-
-    // Mengurutkan kategori berdasarkan alokasi terbesar
-    result.sort(
-      (a, b) => (b['value'] as double)
-          .compareTo(a['value'] as double),
-    );
-
-    return result;
   }
 
   // Format nominal Rupiah
@@ -150,15 +227,6 @@ class HomeScreen extends StatelessWidget {
   }
 
   // ============================================================
-  // SUPABASE: DATA PROYEK
-  // ============================================================
-
-  static final Future<List<Project>> _projectsFuture =
-      ProjectService()
-          .getProjects(const ProjectFilter())
-          .then((list) => list.take(3).toList());
-
-  // ============================================================
   // BUILD
   // ============================================================
 
@@ -171,34 +239,92 @@ class HomeScreen extends StatelessWidget {
           children: [
             _buildHeader(context),
             Expanded(
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildWelcome(context),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _buildSimulationLabel(),
-                          const SizedBox(height: 20),
-                          _buildSummaryCard(context),
-                          const SizedBox(height: 38),
-                          _buildCategories(context),
-                          const SizedBox(height: 38),
-                          _buildProjects(context),
-                          const SizedBox(height: 38),
-                          _buildInsight(context),
-                        ],
+              child: RefreshIndicator(
+                color: teal,
+                onRefresh: _refresh,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildWelcome(context),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+                        child: _selectionError != null
+                            ? _buildPageError()
+                            : Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildSimulationLabel(),
+                                  const SizedBox(height: 20),
+                                  _buildSummaryCard(context),
+                                  const SizedBox(height: 38),
+                                  _buildCategories(context),
+                                  const SizedBox(height: 38),
+                                  _buildProjects(context),
+                                  const SizedBox(height: 38),
+                                  _buildInsight(context),
+                                ],
+                              ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // ERROR / LOADING BERSAMA
+  // ============================================================
+
+  /// Tampilan error untuk seluruh halaman (misalnya tidak ada internet).
+  Widget _buildPageError() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 40),
+      child: Center(
+        child: Column(
+          children: [
+            const Icon(Icons.wifi_off_rounded, size: 36, color: grey),
+            const SizedBox(height: 12),
+            Text(
+              _selectionError!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: grey),
+            ),
+            const SizedBox(height: 14),
+            OutlinedButton(onPressed: _init, child: const Text('Coba lagi')),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _loadingBox({Color color = teal}) {
+    return Padding(
+      padding: const EdgeInsets.all(30),
+      child: Center(child: CircularProgressIndicator(color: color)),
+    );
+  }
+
+  Widget _errorBox(String message, {Color textColor = grey}) {
+    return Padding(
+      padding: const EdgeInsets.all(15),
+      child: Column(
+        children: [
+          const Icon(Icons.error_outline, color: Color(0xFFC94C4C), size: 30),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            style: TextStyle(fontSize: 12, color: textColor),
+            textAlign: TextAlign.center,
+          ),
+          TextButton(onPressed: _refresh, child: const Text('Coba lagi')),
+        ],
       ),
     );
   }
@@ -257,10 +383,7 @@ class HomeScreen extends StatelessWidget {
           ),
           const Spacer(),
           GestureDetector(
-            onTap: () => _open(
-              context,
-              const NotificationScreen(),
-            ),
+            onTap: () => _open(context, const NotificationScreen()),
             child: Stack(
               children: [
                 const SizedBox(
@@ -272,37 +395,32 @@ class HomeScreen extends StatelessWidget {
                     color: navy,
                   ),
                 ),
-                Positioned(
-                  left: 22,
-                  top: 8,
-                  child: Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFC94C4C),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: Colors.white,
-                        width: 1.6,
+                if (_user.hasUnreadNotification)
+                  Positioned(
+                    left: 22,
+                    top: 8,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFC94C4C),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 1.6),
                       ),
                     ),
                   ),
-                ),
               ],
             ),
           ),
           const SizedBox(width: 16),
           GestureDetector(
-            onTap: () => _open(
-              context,
-              const ProfileScreen(),
-            ),
-            child: const CircleAvatar(
+            onTap: () => _open(context, const ProfileScreen()),
+            child: CircleAvatar(
               radius: 17,
-              backgroundColor: Color(0xFFD9E8F5),
+              backgroundColor: const Color(0xFFD9E8F5),
               child: Text(
-                'AR',
-                style: TextStyle(
+                _user.initials,
+                style: const TextStyle(
                   color: blue,
                   fontSize: 13,
                   fontWeight: FontWeight.bold,
@@ -321,9 +439,7 @@ class HomeScreen extends StatelessWidget {
       height: height,
       decoration: BoxDecoration(
         color: color,
-        borderRadius: const BorderRadius.vertical(
-          top: Radius.circular(2),
-        ),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(2)),
       ),
     );
   }
@@ -340,29 +456,18 @@ class HomeScreen extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
-            Color(0xFFEAF2FA),
-            Color(0xFFF6F9FC),
-            Color(0xFFE8F6F4),
-          ],
+          colors: [Color(0xFFEAF2FA), Color(0xFFF6F9FC), Color(0xFFE8F6F4)],
         ),
-        border: Border(
-          bottom: BorderSide(color: Color(0xFFDAE6EF)),
-        ),
+        border: Border(bottom: BorderSide(color: Color(0xFFDAE6EF))),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 7,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.7),
-              border: Border.all(
-                color: const Color(0xFFD1E2F1),
-              ),
+              border: Border.all(color: const Color(0xFFD1E2F1)),
               borderRadius: BorderRadius.circular(100),
             ),
             child: const Text(
@@ -376,9 +481,11 @@ class HomeScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 18),
-          const Text(
-            'Selamat datang, Ayu.',
-            style: TextStyle(
+          Text(
+            _user.firstName == null
+                ? 'Selamat datang.'
+                : 'Selamat datang, ${_user.firstName}.',
+            style: const TextStyle(
               fontSize: 27,
               letterSpacing: -1.2,
               color: navy,
@@ -387,18 +494,13 @@ class HomeScreen extends StatelessWidget {
           const SizedBox(height: 5),
           const Text(
             'Pantau bagaimana anggaran publik bekerja untuk kotamu.',
-            style: TextStyle(
-              fontSize: 13,
-              color: Color(0xFF53657A),
-            ),
+            style: TextStyle(fontSize: 13, color: Color(0xFF53657A)),
           ),
           const SizedBox(height: 28),
           Container(
             decoration: BoxDecoration(
               color: Colors.white,
-              border: Border.all(
-                color: const Color(0xFFD9E4EE),
-              ),
+              border: Border.all(color: const Color(0xFFD9E4EE)),
               borderRadius: BorderRadius.circular(14),
               boxShadow: const [
                 BoxShadow(
@@ -413,18 +515,14 @@ class HomeScreen extends StatelessWidget {
                 _selectorRow(
                   context,
                   label: 'Wilayah pilihan',
-                  value: 'Kota Surabaya, Jawa Timur',
+                  value: _selection?.region.fullName ?? 'Memuat wilayah...',
                   showIcon: true,
                 ),
-                const Divider(
-                  height: 1,
-                  thickness: 0.8,
-                  color: border,
-                ),
+                const Divider(height: 1, thickness: 0.8, color: border),
                 _selectorRow(
                   context,
                   label: 'Tahun anggaran',
-                  value: '2026',
+                  value: _selection == null ? '-' : '${_selection!.year}',
                   showIcon: false,
                 ),
               ],
@@ -442,15 +540,10 @@ class HomeScreen extends StatelessWidget {
     required bool showIcon,
   }) {
     return InkWell(
-      onTap: () => _open(
-        context,
-        const RegionPeriodScreen(),
-      ),
+      // Membuka halaman Pilih Wilayah & Periode.
+      onTap: () => _openRegionPeriod(context),
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: 18,
-          vertical: 11,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
         child: Row(
           children: [
             if (showIcon) ...[
@@ -475,10 +568,7 @@ class HomeScreen extends StatelessWidget {
                 children: [
                   Text(
                     label,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: grey,
-                    ),
+                    style: const TextStyle(fontSize: 11, color: grey),
                   ),
                   const SizedBox(height: 5),
                   Text(
@@ -509,25 +599,16 @@ class HomeScreen extends StatelessWidget {
 
   Widget _buildSimulationLabel() {
     return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 9,
-        vertical: 6,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
       decoration: BoxDecoration(
         color: const Color(0xFFFFF9E9),
-        border: Border.all(
-          color: const Color(0xFFEDD8A7),
-        ),
+        border: Border.all(color: const Color(0xFFEDD8A7)),
         borderRadius: BorderRadius.circular(6),
       ),
       child: const Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.info_outline,
-            size: 14,
-            color: Color(0xFF755022),
-          ),
+          Icon(Icons.info_outline, size: 14, color: Color(0xFF755022)),
           SizedBox(width: 6),
           Text(
             'DATA SIMULASI — BUKAN DATA RESMI',
@@ -548,6 +629,57 @@ class HomeScreen extends StatelessWidget {
   // ============================================================
 
   Widget _buildSummaryCard(BuildContext context) {
+    return FutureBuilder<BudgetOverview>(
+      future: _overviewFuture,
+      builder: (context, snapshot) {
+        if (_overviewFuture == null ||
+            snapshot.connectionState != ConnectionState.done) {
+          return _summaryShell(_loadingBox(color: Colors.white));
+        }
+        if (snapshot.hasError) {
+          return _summaryShell(
+            _errorBox(
+              'Gagal memuat ringkasan anggaran.',
+              textColor: const Color(0xFFC6D2DF),
+            ),
+          );
+        }
+        final overview = snapshot.data!;
+        if (overview.isEmpty) {
+          return _summaryShell(
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                'Belum ada data anggaran untuk ${_selection?.region.name ?? 'wilayah ini'} '
+                'pada tahun ${_selection?.year ?? '-'}.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12, color: Color(0xFFC6D2DF)),
+              ),
+            ),
+          );
+        }
+        return _summaryCardContent(context, overview);
+      },
+    );
+  }
+
+  /// Kartu navy kosong untuk status loading / error / data kosong.
+  Widget _summaryShell(Widget child) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: navy,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _summaryCardContent(BuildContext context, BudgetOverview overview) {
+    final (totalNumber, totalUnit) = splitRupiah(overview.totalAllocation);
+    final (realizedNumber, realizedUnit) = splitRupiah(overview.realized);
+    final (remainingNumber, remainingUnit) = splitRupiah(overview.remaining);
+
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
@@ -565,10 +697,7 @@ class HomeScreen extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 20,
-              vertical: 24,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -594,35 +723,33 @@ class HomeScreen extends StatelessWidget {
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Total anggaran 2026',
-                            style: TextStyle(
+                            'Total anggaran ${_selection?.year ?? ''}',
+                            style: const TextStyle(
                               fontSize: 13,
                               color: Color(0xFFC6D2DF),
                             ),
                           ),
-                          SizedBox(height: 2),
+                          const SizedBox(height: 2),
                           Text.rich(
                             TextSpan(
-                              style: TextStyle(
-                                color: Colors.white,
-                              ),
+                              style: const TextStyle(color: Colors.white),
                               children: [
                                 TextSpan(
-                                  text: 'Rp5,20 ',
-                                  style: TextStyle(
+                                  text: '$totalNumber ',
+                                  style: const TextStyle(
                                     fontSize: 31,
                                     fontWeight: FontWeight.bold,
                                     letterSpacing: -2,
                                   ),
                                 ),
                                 TextSpan(
-                                  text: 'triliun',
-                                  style: TextStyle(
+                                  text: totalUnit,
+                                  style: const TextStyle(
                                     fontSize: 20,
                                     fontWeight: FontWeight.w600,
                                     letterSpacing: -0.5,
@@ -634,12 +761,12 @@ class HomeScreen extends StatelessWidget {
                         ],
                       ),
                     ),
-                    _buildRealizationRing(0.654),
+                    _buildRealizationRing(overview.realizationRatio),
                   ],
                 ),
                 const SizedBox(height: 18),
                 _progressBar(
-                  0.654,
+                  overview.realizationRatio,
                   teal,
                   Colors.white.withValues(alpha: 0.13),
                   7,
@@ -650,30 +777,32 @@ class HomeScreen extends StatelessWidget {
                     _legendItem(
                       const Color(0xFF58C4BA),
                       'Realisasi terhadap pagu',
-                      'Rp3,40 triliun',
+                      '$realizedNumber $realizedUnit',
                     ),
                     const SizedBox(width: 18),
                     _legendItem(
                       const Color(0xFFD4DDE7),
                       'Belum terealisasi',
-                      'Rp1,80 triliun',
+                      '$remainingNumber $remainingUnit',
                     ),
                   ],
                 ),
                 const SizedBox(height: 20),
-                const Row(
+                Row(
                   children: [
-                    Icon(
+                    const Icon(
                       Icons.calendar_today_outlined,
                       size: 16,
                       color: Color(0xFFAEBDCB),
                     ),
-                    SizedBox(width: 7),
-                    Text(
-                      'Periode pelaporan sampai 31 Oktober 2026',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: Color(0xFFAEBDCB),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        _reportingText(overview),
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: Color(0xFFAEBDCB),
+                        ),
                       ),
                     ),
                   ],
@@ -687,9 +816,7 @@ class HomeScreen extends StatelessWidget {
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.07),
               border: Border(
-                top: BorderSide(
-                  color: Colors.white.withValues(alpha: 0.12),
-                ),
+                top: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
               ),
             ),
             child: Row(
@@ -721,19 +848,19 @@ class HomeScreen extends StatelessWidget {
                           color: Colors.white,
                         ),
                       ),
-                      const Text(
-                        'Ringkasan kompilasi data simulasi untuk Kota Surabaya.',
-                        style: TextStyle(
+                      Text(
+                        'Ringkasan kompilasi data '
+                        '${(overview.dataStatus ?? 'simulasi').toLowerCase()} '
+                        'untuk ${_selection?.region.name ?? '-'}.',
+                        style: const TextStyle(
                           fontSize: 11,
                           height: 1.7,
                           color: Color(0xFFB7C4D1),
                         ),
                       ),
                       GestureDetector(
-                        onTap: () => _open(
-                          context,
-                          const InformationSourceScreen(),
-                        ),
+                        onTap: () =>
+                            _open(context, const InformationSourceScreen()),
                         child: const Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -765,6 +892,20 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
+  /// Teks periode pelaporan dari budgets.reporting_period dan
+  /// tanggal pembaruan dari budget_datasets.last_updated.
+  String _reportingText(BudgetOverview overview) {
+    final period = overview.reportingPeriod;
+    final updated = overview.lastUpdated;
+    if (period == null && updated == null) {
+      return 'Periode pelaporan belum tersedia';
+    }
+    return [
+      if (period != null) 'Periode pelaporan $period',
+      if (updated != null) 'diperbarui ${formatDate(updated)}',
+    ].join(' · ');
+  }
+
   Widget _buildRealizationRing(double value) {
     return SizedBox(
       width: 74,
@@ -782,23 +923,20 @@ class HomeScreen extends StatelessWidget {
               backgroundColor: Colors.white.withValues(alpha: 0.13),
             ),
           ),
-          const Column(
+          Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                '65,4%',
-                style: TextStyle(
+                formatPercent(value),
+                style: const TextStyle(
                   fontSize: 15,
                   fontWeight: FontWeight.w800,
                   color: Colors.white,
                 ),
               ),
-              Text(
+              const Text(
                 'terealisasi',
-                style: TextStyle(
-                  fontSize: 8,
-                  color: Color(0xFFB9C7D5),
-                ),
+                style: TextStyle(fontSize: 8, color: Color(0xFFB9C7D5)),
               ),
             ],
           ),
@@ -807,20 +945,13 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _legendItem(
-    Color color,
-    String label,
-    String value,
-  ) {
+  Widget _legendItem(Color color, String label, String value) {
     return Row(
       children: [
         Container(
           width: 9,
           height: 9,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-          ),
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: 9),
         Column(
@@ -828,10 +959,7 @@ class HomeScreen extends StatelessWidget {
           children: [
             Text(
               label,
-              style: const TextStyle(
-                fontSize: 10,
-                color: Color(0xFFAEBDCB),
-              ),
+              style: const TextStyle(fontSize: 10, color: Color(0xFFAEBDCB)),
             ),
             Text(
               value,
@@ -906,24 +1034,14 @@ class HomeScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 5),
-                  const Icon(
-                    Icons.chevron_right,
-                    size: 16,
-                    color: blue,
-                  ),
+                  const Icon(Icons.chevron_right, size: 16, color: blue),
                 ],
               ),
             ),
           ],
         ),
         const SizedBox(height: 7),
-        Text(
-          subtitle,
-          style: const TextStyle(
-            fontSize: 12,
-            color: grey,
-          ),
-        ),
+        Text(subtitle, style: const TextStyle(fontSize: 12, color: grey)),
       ],
     );
   }
@@ -940,7 +1058,7 @@ class HomeScreen extends StatelessWidget {
           'Ke mana anggaran dialokasikan?',
           'Jelajahi anggaran',
           () => _open(context, const BudgetScreen()),
-          'Distribusi anggaran per kategori pada tahun 2026',
+          'Distribusi anggaran per kategori pada tahun ${_selection?.year ?? '-'}',
         ),
         const SizedBox(height: 22),
         Container(
@@ -957,15 +1075,14 @@ class HomeScreen extends StatelessWidget {
               ),
             ],
           ),
-          child: FutureBuilder<List<Map<String, dynamic>>>(
-            future: _categoriesFuture,
+          child: FutureBuilder<BudgetOverview>(
+            future: _overviewFuture,
             builder: (context, snapshot) {
-              if (snapshot.connectionState != ConnectionState.done) {
+              if (_overviewFuture == null ||
+                  snapshot.connectionState != ConnectionState.done) {
                 return const Padding(
                   padding: EdgeInsets.all(30),
-                  child: Center(
-                    child: CircularProgressIndicator(color: teal),
-                  ),
+                  child: Center(child: CircularProgressIndicator(color: teal)),
                 );
               }
 
@@ -982,33 +1099,36 @@ class HomeScreen extends StatelessWidget {
                       const SizedBox(height: 8),
                       const Text(
                         'Gagal memuat kategori anggaran.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: grey,
-                        ),
+                        style: TextStyle(fontSize: 12, color: grey),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 5),
-                      Text(
-                        '${snapshot.error}',
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: grey,
-                        ),
-                        textAlign: TextAlign.center,
+                      TextButton(
+                        onPressed: _refresh,
+                        child: const Text('Coba lagi'),
                       ),
                     ],
                   ),
                 );
               }
 
-              final items = snapshot.data ?? [];
+              // Ubah ke bentuk Map yang dipakai _categoryItem.
+              final categories = snapshot.data?.categories ?? [];
+              final items = [
+                for (int i = 0; i < categories.length; i++)
+                  {
+                    'name': categories[i].name,
+                    'amount': _formatBudgetAmount(categories[i].allocation),
+                    'value': categories[i].share,
+                    'color': _palette[i % _palette.length],
+                  },
+              ];
 
               if (items.isEmpty) {
                 return const Padding(
                   padding: EdgeInsets.all(15),
                   child: Text(
-                    'Belum ada kategori anggaran.',
+                    'Belum ada kategori anggaran untuk pilihan ini.',
                     style: TextStyle(color: grey),
                   ),
                 );
@@ -1016,8 +1136,7 @@ class HomeScreen extends StatelessWidget {
 
               return Column(
                 children: [
-                  for (final category in items)
-                    _categoryItem(category),
+                  for (final category in items) _categoryItem(category),
                 ],
               );
             },
@@ -1097,34 +1216,31 @@ class HomeScreen extends StatelessWidget {
           'Proyek di sekitar wilayahmu',
           'Lihat semua proyek',
           () => _open(context, const ProjectScreen()),
-          'Cuplikan proyek publik di Kota Surabaya',
+          'Cuplikan proyek publik di ${_selection?.region.name ?? '-'}',
         ),
         const SizedBox(height: 22),
         FutureBuilder<List<Project>>(
           future: _projectsFuture,
           builder: (context, snapshot) {
-            if (snapshot.connectionState != ConnectionState.done) {
+            if (_projectsFuture == null ||
+                snapshot.connectionState != ConnectionState.done) {
               return const Padding(
                 padding: EdgeInsets.all(30),
-                child: Center(
-                  child: CircularProgressIndicator(color: teal),
-                ),
+                child: Center(child: CircularProgressIndicator(color: teal)),
               );
             }
 
             if (snapshot.hasError) {
-              return const Text(
-                'Gagal memuat proyek.',
-                style: TextStyle(color: grey),
-              );
+              return _errorBox('Gagal memuat proyek.');
             }
 
             final items = snapshot.data ?? [];
 
             if (items.isEmpty) {
-              return const Text(
-                'Belum ada proyek.',
-                style: TextStyle(color: grey),
+              return Text(
+                'Belum ada proyek di ${_selection?.region.name ?? 'wilayah ini'} '
+                'pada tahun ${_selection?.year ?? '-'}.',
+                style: const TextStyle(fontSize: 12, color: grey),
               );
             }
 
@@ -1150,10 +1266,7 @@ class HomeScreen extends StatelessWidget {
         : (p.progress! / 100).clamp(0.0, 1.0);
 
     return GestureDetector(
-      onTap: () => _open(
-        context,
-        ProjectDetailScreen(projectId: p.id),
-      ),
+      onTap: () => _open(context, ProjectDetailScreen(projectId: p.id)),
       child: Container(
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
@@ -1170,8 +1283,7 @@ class HomeScreen extends StatelessWidget {
                 height: 165,
                 width: double.infinity,
                 fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) =>
-                    const SizedBox.shrink(),
+                errorBuilder: (_, _, _) => const SizedBox.shrink(),
               ),
             Padding(
               padding: const EdgeInsets.all(18),
@@ -1213,10 +1325,32 @@ class HomeScreen extends StatelessWidget {
                         ),
                       ),
                       const Spacer(),
-                      const Icon(
-                        Icons.favorite_border,
-                        size: 24,
-                        color: blue,
+                      // Simpan / batal simpan proyek (tabel saved_projects)
+                      SizedBox(
+                        width: 32,
+                        height: 32,
+                        child: _savingProjectIds.contains(p.id)
+                            ? const Padding(
+                                padding: EdgeInsets.all(6),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: blue,
+                                ),
+                              )
+                            : IconButton(
+                                padding: EdgeInsets.zero,
+                                tooltip: _savedProjectIds.contains(p.id)
+                                    ? 'Hapus dari Proyek Tersimpan'
+                                    : 'Simpan proyek',
+                                onPressed: () => _toggleSaved(p),
+                                icon: Icon(
+                                  _savedProjectIds.contains(p.id)
+                                      ? Icons.favorite
+                                      : Icons.favorite_border,
+                                  size: 24,
+                                  color: blue,
+                                ),
+                              ),
                       ),
                     ],
                   ),
@@ -1244,10 +1378,7 @@ class HomeScreen extends StatelessWidget {
                             if (p.district != null) p.district!,
                             if (p.categoryName != null) p.categoryName!,
                           ].join(' · '),
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: grey,
-                          ),
+                          style: const TextStyle(fontSize: 10, color: grey),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
@@ -1273,12 +1404,7 @@ class HomeScreen extends StatelessWidget {
                   ),
                   if (progress != null) ...[
                     const SizedBox(height: 11),
-                    _progressBar(
-                      progress,
-                      teal,
-                      const Color(0xFFE6EBF0),
-                      8,
-                    ),
+                    _progressBar(progress, teal, const Color(0xFFE6EBF0), 8),
                   ],
                   const SizedBox(height: 15),
                   const Divider(
@@ -1319,13 +1445,7 @@ class HomeScreen extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 9,
-            color: grey,
-          ),
-        ),
+        Text(label, style: const TextStyle(fontSize: 9, color: grey)),
         Text(
           value,
           style: const TextStyle(
@@ -1343,23 +1463,54 @@ class HomeScreen extends StatelessWidget {
   // ============================================================
 
   Widget _buildInsight(BuildContext context) {
+    return FutureBuilder<BudgetOverview>(
+      future: _overviewFuture,
+      builder: (context, snapshot) {
+        // Saat loading / error, bagian lain sudah menampilkan statusnya.
+        if (snapshot.connectionState != ConnectionState.done ||
+            snapshot.hasError ||
+            snapshot.data == null) {
+          return const SizedBox.shrink();
+        }
+        return _insightCard(context, snapshot.data!.insight);
+      },
+    );
+  }
+
+  Widget _insightCard(BuildContext context, BudgetInsight? insight) {
+    // Judul dan penjelasan insight dari perbandingan dua tahun anggaran.
+    final String title;
+    final String description;
+    if (insight == null) {
+      title = 'Belum ada pembanding tahun ${(_selection?.year ?? 0) - 1}';
+      description = 'Insight muncul jika data anggaran tahun sebelumnya tersedia untuk wilayah ini.';
+    } else {
+      final bool up = insight.changePercent >= 0;
+      final String percent = insight.changePercent
+          .abs()
+          .toStringAsFixed(1)
+          .replaceAll('.', ',');
+      final (beforeNumber, beforeUnit) = splitRupiah(
+        insight.previousAllocation,
+      );
+      final (nowNumber, nowUnit) = splitRupiah(insight.currentAllocation);
+      title =
+          'Alokasi ${insight.categoryName.toLowerCase()} '
+          '${up ? 'naik' : 'turun'} $percent% dibanding ${insight.previousYear}';
+      description =
+          'Dari $beforeNumber $beforeUnit menjadi $nowNumber $nowUnit '
+          'pada cakupan tahunan yang sebanding.';
+    }
+
     return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 18,
-        vertical: 22,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
-            Color(0xFFEAF2FA),
-            Color(0xFFEDF8F6),
-          ],
+          colors: [Color(0xFFEAF2FA), Color(0xFFEDF8F6)],
         ),
-        border: Border.all(
-          color: const Color(0xFFD6E5ED),
-        ),
+        border: Border.all(color: const Color(0xFFD6E5ED)),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
@@ -1379,11 +1530,7 @@ class HomeScreen extends StatelessWidget {
                 ),
               ],
             ),
-            child: const Icon(
-              Icons.trending_up_rounded,
-              size: 26,
-              color: teal,
-            ),
+            child: const Icon(Icons.trending_up_rounded, size: 26, color: teal),
           ),
           const SizedBox(width: 20),
           Expanded(
@@ -1400,17 +1547,11 @@ class HomeScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 7),
-                const Text(
-                  'Alokasi pendidikan naik 11,4% dibanding 2025',
-                  style: TextStyle(
-                    fontSize: 15,
-                    color: navy,
-                  ),
-                ),
+                Text(title, style: const TextStyle(fontSize: 15, color: navy)),
                 const SizedBox(height: 7),
-                const Text(
-                  'Dari Rp1,40 triliun menjadi Rp1,56 triliun pada cakupan tahunan yang sebanding.',
-                  style: TextStyle(
+                Text(
+                  description,
+                  style: const TextStyle(
                     fontSize: 11,
                     height: 1.5,
                     color: grey,
@@ -1419,10 +1560,7 @@ class HomeScreen extends StatelessWidget {
                 const SizedBox(height: 15),
                 Center(
                   child: GestureDetector(
-                    onTap: () => _open(
-                      context,
-                      const BudgetScreen(),
-                    ),
+                    onTap: () => _open(context, const BudgetScreen()),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1435,11 +1573,7 @@ class HomeScreen extends StatelessWidget {
                           ),
                         ),
                         SizedBox(width: 4),
-                        Icon(
-                          Icons.chevron_right,
-                          size: 16,
-                          color: blue,
-                        ),
+                        Icon(Icons.chevron_right, size: 16, color: blue),
                       ],
                     ),
                   ),
