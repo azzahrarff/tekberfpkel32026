@@ -1,4 +1,3 @@
-
 import '../../core/services/supabase_service.dart';
 
 class BudgetService {
@@ -7,64 +6,117 @@ class BudgetService {
   Future<List<Map<String, dynamic>>> _pages(
     Future<List<Map<String, dynamic>>> Function(int, int) fetch,
   ) async {
+    const pageSize = 200;
     final rows = <Map<String, dynamic>>[];
+
     while (true) {
-      final page = await fetch(rows.length, rows.length + 199);
+      final start = rows.length;
+      final page = await fetch(start, start + pageSize - 1);
       rows.addAll(page);
-      if (page.length < 200) return rows;
+
+      if (page.length < pageSize) {
+        return rows;
+      }
     }
   }
 
+  // Mengambil dataset anggaran yang berkaitan dengan proyek.
   Future<List<Map<String, dynamic>>> getProjectDatasets(
     Map<String, dynamic> project,
   ) async {
-    final region = project['region_id'];
-    final category = project['category_id'];
+    final regionId = project['region_id'];
+    final categoryId = project['category_id'];
     final year = project['fiscal_year'];
-    if (region == null || category == null || year == null) return [];
 
-    final budgets = await _pages((start, end) => _supabase
-        .from('budgets')
-        .select('id, dataset:budget_datasets(*)')
-        .eq('region_id', region)
-        .eq('category_id', category)
-        .eq('fiscal_year', year)
-        .order('id')
-        .range(start, end));
-    final datasets = <Object, Map<String, dynamic>>{};
-    for (final budget in budgets) {
-      final dataset = budget['dataset'];
-      if (dataset is Map<String, dynamic> && dataset['id'] != null) {
-        datasets[dataset['id']] = dataset;
-      }
+    if (regionId == null || categoryId == null || year == null) {
+      return [];
     }
-    return datasets.values.toList();
-  }
 
-  // Mengambil daftar wilayah
-  Future<List<Map<String, dynamic>>> getRegions() async {
-    return _pages((start, end) => _supabase
+    Future<List<Map<String, dynamic>>> datasetsFor(Object id) async {
+      final budgets = await _pages(
+        (start, end) => _supabase
+            .from('budgets')
+            .select('id, dataset:budget_datasets(*)')
+            .eq('region_id', id)
+            .eq('category_id', categoryId)
+            .eq('fiscal_year', year)
+            .order('id')
+            .range(start, end),
+      );
+
+      // Beberapa baris anggaran dapat merujuk ke dataset yang sama.
+      final datasets = <Object, Map<String, dynamic>>{};
+
+      for (final budget in budgets) {
+        final dataset = budget['dataset'];
+        if (dataset is Map<String, dynamic> && dataset['id'] != null) {
+          datasets[dataset['id']] = dataset;
+        }
+      }
+
+      return datasets.values.toList();
+    }
+
+    final localDatasets = await datasetsFor(regionId);
+    if (localDatasets.isNotEmpty) {
+      return localDatasets;
+    }
+
+    final region = await _supabase
         .from('regions')
-        .select('id, region_name, region_type')
-        .order('region_name').order('id').range(start, end));
+        .select('parent_region_id')
+        .eq('id', regionId)
+        .maybeSingle();
+
+    final parentId = region?['parent_region_id'];
+    if (parentId == null || parentId == regionId) {
+      return [];
+    }
+
+    final parentDatasets = await datasetsFor(parentId);
+
+    return [
+      for (final dataset in parentDatasets)
+        {...dataset, 'is_parent_region': true},
+    ];
   }
 
-  // Mengambil daftar kategori anggaran
+  // Mengambil daftar wilayah.
+  Future<List<Map<String, dynamic>>> getRegions() async {
+    return _pages(
+      (start, end) => _supabase
+          .from('regions')
+          .select('id, region_name, region_type')
+          .order('region_name')
+          .order('id')
+          .range(start, end),
+    );
+  }
+
+  // Mengambil daftar kategori anggaran.
   Future<List<Map<String, dynamic>>> getCategories() async {
-    return _pages((start, end) => _supabase
-        .from('budget_categories')
-        .select('id, category_name')
-        .order('category_name').order('id').range(start, end));
+    return _pages(
+      (start, end) => _supabase
+          .from('budget_categories')
+          .select('id, category_name')
+          .order('category_name')
+          .order('id')
+          .range(start, end),
+    );
   }
 
-  // Mengambil pilihan tahun dan tingkat pemerintahan
+  // Mengambil pilihan tahun, tingkat pemerintahan, dan wilayah.
   Future<List<Map<String, dynamic>>> getOptions() async {
-    return _pages((start, end) => _supabase
-        .from('budgets')
-        .select('fiscal_year, government_level, region_id').order('id').range(start, end));
+    return _pages(
+      (start, end) => _supabase
+          .from('budgets')
+          .select('fiscal_year, government_level, region_id')
+          .order('id')
+          .range(start, end),
+    );
   }
 
-  // Mengambil data anggaran berdasarkan filter
+  // Mengambil data anggaran berdasarkan filter.
   Future<List<Map<String, dynamic>>> getBudgets({
     required int year,
     required int regionId,
@@ -89,36 +141,42 @@ class BudgetService {
         .eq('region_id', regionId);
 
     if (governmentLevel != null) {
-      query = query.eq(
-        'government_level',
-        governmentLevel,
-      );
+      query = query.eq('government_level', governmentLevel);
     }
 
     if (categoryId != null) {
       query = query.eq('category_id', categoryId);
     }
 
-    return _pages((start, end) => query.order('id').range(start, end));
+    return _pages(
+      (start, end) => query.order('id').range(start, end),
+    );
   }
 
-  // Mengambil metadata sumber informasi
+  // Mengambil metadata untuk halaman yang dibuka tanpa konteks proyek.
   Future<List<Map<String, dynamic>>> getDatasets() async {
-    return _pages((start, end) => _supabase
-        .from('budget_datasets')
-        .select()
-        .order('last_updated', ascending: false).order('id').range(start, end));
+    return _pages(
+      (start, end) => _supabase
+          .from('budget_datasets')
+          .select()
+          .order('last_updated', ascending: false)
+          .order('id')
+          .range(start, end),
+    );
   }
 
-  // Mengambil istilah untuk Pusat Edukasi
+  // Mengambil istilah dan definisi untuk Pusat Edukasi.
   Future<List<Map<String, dynamic>>> getGlossary() async {
-    return _pages((start, end) => _supabase
-        .from('glossary_terms')
-        .select('term_name, definition')
-        .order('id').range(start, end));
+    return _pages(
+      (start, end) => _supabase
+          .from('glossary_terms')
+          .select('term_name, definition')
+          .order('id')
+          .range(start, end),
+    );
   }
 
-  // Mengambil data realisasi bulanan berdasarkan filter
+  // Mengambil realisasi bulanan berdasarkan filter anggaran.
   Future<List<Map<String, dynamic>>> getMonthlyRealizations({
     required int year,
     required int regionId,
@@ -141,31 +199,22 @@ class BudgetService {
         .eq('budget.region_id', regionId);
 
     if (governmentLevel != null) {
-      query = query.eq(
-        'budget.government_level',
-        governmentLevel,
-      );
+      query = query.eq('budget.government_level', governmentLevel);
     }
 
     if (categoryId != null) {
-      query = query.eq(
-        'budget.category_id',
-        categoryId,
-      );
+      query = query.eq('budget.category_id', categoryId);
     }
 
-    return _pages((start, end) => query.order('id').range(start, end));
+    return _pages(
+      (start, end) => query.order('id').range(start, end),
+    );
   }
 
-  // Mengonversi nilai numerik dan menangani nilai null
   static double number(dynamic value) {
-    return double.tryParse(
-          value?.toString() ?? '',
-        ) ??
-        0;
+    return double.tryParse(value?.toString() ?? '') ?? 0;
   }
 
-  // Menghitung ringkasan anggaran
   Map<String, double> calculateSummary(
     List<Map<String, dynamic>> budgets,
   ) {
@@ -173,22 +222,15 @@ class BudgetService {
     double realization = 0;
 
     for (final budget in budgets) {
-      allocation += number(
-        budget['total_allocation'],
-      );
-
-      realization += number(
-        budget['realized_amount'],
-      );
+      allocation += number(budget['total_allocation']);
+      realization += number(budget['realized_amount']);
     }
 
     return {
       'allocation': allocation,
       'realization': realization,
       'remaining': allocation - realization,
-      'percentage': allocation > 0
-          ? (realization / allocation) * 100
-          : 0.0,
+      'percentage': allocation > 0 ? realization / allocation * 100 : 0.0,
     };
   }
 }
