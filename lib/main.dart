@@ -26,9 +26,7 @@ class MyApp extends StatelessWidget {
       title: 'AnggaranTerbuka',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.blue,
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
       home: const SplashScreen(),
