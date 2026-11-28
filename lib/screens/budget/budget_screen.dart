@@ -1,8 +1,6 @@
 
 import 'package:flutter/material.dart';
 import 'budget_service.dart';
-import 'education_screen.dart';
-import 'information_source_screen.dart';
 
 class BudgetScreen extends StatefulWidget {
   const BudgetScreen({super.key});
@@ -20,13 +18,33 @@ class _BudgetScreenState extends State<BudgetScreen> {
 
   final BudgetService service = BudgetService();
 
-  String selectedYear = '2026';
-  String selectedLevel = 'Kota';
-  String selectedRegion = 'Kota Surabaya';
+  String selectedYear = '';
+  String selectedLevel = '';
+  String selectedRegion = '';
   String selectedCategory = 'Semua kategori';
 
   List<String> years = [];
   List<String> levels = [];
+  List<Map<String, dynamic>> options = [];
+  List<Map<String, dynamic>> visibleRegions = [];
+
+  void syncFilters() {
+    final annual = options.where((r) => r['fiscal_year'].toString() == selectedYear);
+    levels = annual.map((r) => r['government_level']).whereType<String>().toSet().toList()..sort();
+    if (!levels.contains(selectedLevel)) {
+      selectedLevel = levels.isEmpty ? '' : levels.first;
+    }
+    final ids = annual.where((r) => r['government_level'] == selectedLevel)
+        .map((r) => r['region_id']).toSet();
+    final types = regions.where((r) => ids.contains(r['id']))
+        .map((r) => r['region_type']).whereType<String>().toSet();
+    visibleRegions = regions.where((r) => ids.contains(r['id']) ||
+        types.contains(r['region_type'])).toList();
+    if (!visibleRegions.any((r) => r['id'].toString() == selectedRegion)) {
+      final available = visibleRegions.where((r) => ids.contains(r['id']));
+      selectedRegion = available.isEmpty ? '' : available.first['id'].toString();
+    }
+  }
 
   List<Map<String, dynamic>> regions = [];
   List<Map<String, dynamic>> categoryRows = [];
@@ -89,34 +107,19 @@ class _BudgetScreenState extends State<BudgetScreen> {
         categoryRows = c;
 
         years = o
+            .where((e) => int.tryParse(e['fiscal_year'].toString()) != null)
             .map((e) => e['fiscal_year'].toString())
             .toSet()
             .toList()
           ..sort();
 
-        levels = o
-            .map((e) => e['government_level'])
-            .whereType<String>()
-            .toSet()
-            .toList()
-          ..sort();
-
-        if (years.isNotEmpty &&
-            !years.contains(selectedYear)) {
-          selectedYear = years.last;
+        options = o;
+        if (!years.contains(selectedYear)) {
+          selectedYear = years.isEmpty ? '' : years.last;
         }
-
-        if (levels.isNotEmpty &&
-            !levels.contains(selectedLevel)) {
-          selectedLevel = levels.first;
-        }
-
-        if (regions.isNotEmpty &&
-            !regions.any(
-              (e) => e['region_name'] == selectedRegion,
-            )) {
-          selectedRegion =
-              regions.first['region_name'].toString();
+        syncFilters();
+        if (!categoryRows.any((r) => r['category_name'] == selectedCategory)) {
+          selectedCategory = 'Semua kategori';
         }
       });
 
@@ -142,7 +145,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
 
     try {
       if (years.isEmpty ||
-          regions.isEmpty ||
+          selectedRegion.isEmpty ||
           levels.isEmpty) {
         if (mounted) {
           setState(() {
@@ -155,9 +158,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
 
       final year = int.parse(selectedYear);
 
-      final region = regions.firstWhere(
-        (e) => e['region_name'] == selectedRegion,
-      )['id'] as int;
+      final region = int.parse(selectedRegion);
 
       final level = selectedLevel;
 
@@ -311,57 +312,28 @@ class _BudgetScreenState extends State<BudgetScreen> {
   }
 
   void change(VoidCallback update) {
-    setState(update);
+    setState(() {
+      update();
+      syncFilters();
+    });
     load();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          FloatingActionButton.extended(
-            heroTag: 'education',
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) =>
-                      const EducationScreen(),
-                ),
-              );
-            },
-            label: const Text('Pusat Edukasi'),
-            icon: const Icon(Icons.school_outlined),
-          ),
-          const SizedBox(height: 10),
-          FloatingActionButton.extended(
-            heroTag: 'information',
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) =>
-                      InformationSourceScreen(
-  year: int.tryParse(selectedYear),
-),
-                ),
-              );
-            },
-            label: const Text('Dasar Informasi'),
-            icon: const Icon(Icons.info_outline),
-          ),
-        ],
-      ),
       backgroundColor: background,
-      body: SafeArea(
+      body: RefreshIndicator(
+        onRefresh: () async {
+          if (!loading) await initialize();
+        },
+        child: SafeArea(
         child: Column(
           children: [
             _buildHeader(),
             Expanded(
               child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(
                   18, 18, 18, 120,
                 ),
@@ -469,6 +441,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -708,16 +681,12 @@ class _BudgetScreenState extends State<BudgetScreen> {
                 child: _filterDropdown(
                   'Wilayah',
                   selectedRegion,
-                  regions
-                      .map(
-                        (e) =>
-                            e['region_name'].toString(),
-                      )
-                      .toSet()
-                      .toList(),
-                  (value) => change(
-                    () => selectedRegion = value!,
-                  ),
+                  visibleRegions.map((r) => r['id'].toString()).toList(),
+                  (value) => change(() => selectedRegion = value!),
+                  labels: {
+                    for (final r in visibleRegions)
+                      r['id'].toString(): r['region_name'].toString(),
+                  },
                 ),
               ),
               const SizedBox(width: 12),
@@ -748,8 +717,9 @@ class _BudgetScreenState extends State<BudgetScreen> {
     String label,
     String value,
     List<String> items,
-    ValueChanged<String?> onChanged,
-  ) {
+    ValueChanged<String?> onChanged, {
+    Map<String, String> labels = const {},
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -793,7 +763,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                 return DropdownMenuItem(
                   value: item,
                   child: Text(
-                    item,
+                    labels[item] ?? item,
                     overflow: TextOverflow.ellipsis,
                   ),
                 );

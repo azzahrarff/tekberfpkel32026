@@ -1,36 +1,67 @@
 
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/services/supabase_service.dart';
 
 class BudgetService {
-  final SupabaseClient _supabase = Supabase.instance.client;
+  final _supabase = SupabaseService.client;
+
+  Future<List<Map<String, dynamic>>> _pages(
+    Future<List<Map<String, dynamic>>> Function(int, int) fetch,
+  ) async {
+    final rows = <Map<String, dynamic>>[];
+    while (true) {
+      final page = await fetch(rows.length, rows.length + 199);
+      rows.addAll(page);
+      if (page.length < 200) return rows;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getProjectDatasets(
+    Map<String, dynamic> project,
+  ) async {
+    final region = project['region_id'];
+    final category = project['category_id'];
+    final year = project['fiscal_year'];
+    if (region == null || category == null || year == null) return [];
+
+    final budgets = await _pages((start, end) => _supabase
+        .from('budgets')
+        .select('id, dataset:budget_datasets(*)')
+        .eq('region_id', region)
+        .eq('category_id', category)
+        .eq('fiscal_year', year)
+        .order('id')
+        .range(start, end));
+    final datasets = <Object, Map<String, dynamic>>{};
+    for (final budget in budgets) {
+      final dataset = budget['dataset'];
+      if (dataset is Map<String, dynamic> && dataset['id'] != null) {
+        datasets[dataset['id']] = dataset;
+      }
+    }
+    return datasets.values.toList();
+  }
 
   // Mengambil daftar wilayah
   Future<List<Map<String, dynamic>>> getRegions() async {
-    final response = await _supabase
+    return _pages((start, end) => _supabase
         .from('regions')
         .select('id, region_name, region_type')
-        .order('region_name');
-
-    return List<Map<String, dynamic>>.from(response);
+        .order('region_name').order('id').range(start, end));
   }
 
   // Mengambil daftar kategori anggaran
   Future<List<Map<String, dynamic>>> getCategories() async {
-    final response = await _supabase
+    return _pages((start, end) => _supabase
         .from('budget_categories')
         .select('id, category_name')
-        .order('category_name');
-
-    return List<Map<String, dynamic>>.from(response);
+        .order('category_name').order('id').range(start, end));
   }
 
   // Mengambil pilihan tahun dan tingkat pemerintahan
   Future<List<Map<String, dynamic>>> getOptions() async {
-    final response = await _supabase
+    return _pages((start, end) => _supabase
         .from('budgets')
-        .select('fiscal_year, government_level');
-
-    return List<Map<String, dynamic>>.from(response);
+        .select('fiscal_year, government_level, region_id').order('id').range(start, end));
   }
 
   // Mengambil data anggaran berdasarkan filter
@@ -68,29 +99,23 @@ class BudgetService {
       query = query.eq('category_id', categoryId);
     }
 
-    final response = await query;
-
-    return List<Map<String, dynamic>>.from(response);
+    return _pages((start, end) => query.order('id').range(start, end));
   }
 
   // Mengambil metadata sumber informasi
   Future<List<Map<String, dynamic>>> getDatasets() async {
-    final response = await _supabase
+    return _pages((start, end) => _supabase
         .from('budget_datasets')
         .select()
-        .order('last_updated', ascending: false);
-
-    return List<Map<String, dynamic>>.from(response);
+        .order('last_updated', ascending: false).order('id').range(start, end));
   }
 
   // Mengambil istilah untuk Pusat Edukasi
   Future<List<Map<String, dynamic>>> getGlossary() async {
-    final response = await _supabase
+    return _pages((start, end) => _supabase
         .from('glossary_terms')
         .select('term_name, definition')
-        .order('id');
-
-    return List<Map<String, dynamic>>.from(response);
+        .order('id').range(start, end));
   }
 
   // Mengambil data realisasi bulanan berdasarkan filter
@@ -129,11 +154,7 @@ class BudgetService {
       );
     }
 
-    final response = await query.order(
-      'realization_month',
-    );
-
-    return List<Map<String, dynamic>>.from(response);
+    return _pages((start, end) => query.order('id').range(start, end));
   }
 
   // Mengonversi nilai numerik dan menangani nilai null

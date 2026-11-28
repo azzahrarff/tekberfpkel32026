@@ -1,3 +1,5 @@
+import '../budget/education_screen.dart';
+import '../budget/information_source_screen.dart';
 import 'package:flutter/material.dart';
 import '../../core/services/supabase_service.dart';
 import '../contribution/contribution_widgets.dart';
@@ -108,10 +110,13 @@ class _ProjectReviewScreenState extends State<ProjectReviewScreen> {
             Padding(padding: const EdgeInsets.fromLTRB(16, 18, 16, 40), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               simulationBadge(), const SizedBox(height: 16),
               switch (_tab) {
-                1 => _Finance(project: data.project, onGlossary: _showGlossary),
+                1 => _Finance(project: data.project, onGlossary: () => Navigator.push<void>(
+                  context,
+                  MaterialPageRoute(builder: (_) => EducationScreen(project: data.project)),
+                )),
                 2 => _Timeline(data: data),
-                3 => _Procurement(data: data, onMetadata: () => _metadata(data.project)),
-                _ => _Summary(data: data, onFinance: () => setState(() => _tab = 1), onMetadata: () => _metadata(data.project)),
+                3 => _Procurement(data: data, onMetadata: () => _openInformation(data.project)),
+                _ => _Summary(data: data, onFinance: () => setState(() => _tab = 1), onMetadata: () => _openInformation(data.project)),
               },
             ])),
           ]))));
@@ -156,16 +161,14 @@ class _ProjectReviewScreenState extends State<ProjectReviewScreen> {
 
   Widget _tabBar() => Container(color: Colors.white, child: Row(children: [for (int i = 0; i < tabs.length; i++) Expanded(child: InkWell(onTap: () => setState(() => _tab = i), child: Container(height: 54, alignment: Alignment.center, decoration: BoxDecoration(border: Border(bottom: BorderSide(color: _tab == i ? blue : border, width: _tab == i ? 3 : 1))), child: Text(tabs[i], style: TextStyle(color: _tab == i ? blue : grey, fontSize: 12, fontWeight: _tab == i ? FontWeight.w700 : FontWeight.w400))))) ]));
 
-  void _metadata(Map<String, dynamic> project) => showReviewInfo(context, 'Sumber & metadata', 'Sumber: Database simulasi AnggaranTerbuka (Supabase).\nKode: ${display(project['project_code'])}\nTahun: ${display(project['fiscal_year'])}\nTerakhir diperbarui: ${dateLabel(project['last_updated'])}\nInformasi ini bukan data resmi pemerintah.');
 
-  void _showGlossary() {
-    final future = ProjectReviewService.glossary();
-    showDialog<void>(context: context, builder: (context) => AlertDialog(title: const Text('Glosarium anggaran'), content: SizedBox(width: 450, child: FutureBuilder<List<Map<String, dynamic>>>(future: future, builder: (context, snapshot) {
-      if (snapshot.connectionState != ConnectionState.done) return const Center(heightFactor: 2, child: CircularProgressIndicator());
-      if (snapshot.hasError) return const Text('Gagal memuat glosarium.');
-      final rows = snapshot.data ?? [];
-      return SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [if (rows.isEmpty) const Text('Belum tersedia.'), for (final r in rows) detailRow(display(r['term_name']), display(r['definition']))]));
-    })), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Tutup'))]));
+  void _openInformation(Map<String, dynamic> project) {
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => InformationSourceScreen(project: project),
+      ),
+    );
   }
 }
 

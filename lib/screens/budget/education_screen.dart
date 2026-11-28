@@ -4,7 +4,10 @@ import 'budget_service.dart';
 import 'information_source_screen.dart';
 
 class EducationScreen extends StatefulWidget {
-  const EducationScreen({super.key});
+  final Map<String, dynamic>? project;
+  final bool fromMetadata;
+
+  const EducationScreen({super.key, this.project, this.fromMetadata = false});
 
   @override
   State<EducationScreen> createState() =>
@@ -101,12 +104,17 @@ class _EducationScreenState extends State<EducationScreen> {
 
     return Scaffold(
       backgroundColor: background,
-      body: SafeArea(
+      body: RefreshIndicator(
+        onRefresh: () async {
+          if (!loading) await loadTerms();
+        },
+        child: SafeArea(
         child: Column(
           children: [
             _buildHeader(),
             Expanded(
               child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(
                   20, 20, 20, 30,
                 ),
@@ -175,6 +183,7 @@ class _EducationScreenState extends State<EducationScreen> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -399,11 +408,15 @@ class _EducationScreenState extends State<EducationScreen> {
 
           InkWell(
             onTap: () {
+              if (widget.fromMetadata) {
+                Navigator.pop(context);
+                return;
+              }
               Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder: (_) =>
-                      const InformationSourceScreen(),
+                      InformationSourceScreen(project: widget.project, fromEducation: true),
                 ),
               );
             },
